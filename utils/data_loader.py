@@ -202,6 +202,35 @@ def get_common_timepoints_multi(
     return [t for t in first_df.index if t in common]
 
 
+def build_long_format_all_timepoints(
+    condition_dfs: dict[str, pd.DataFrame], timepoints: list[str]
+) -> pd.DataFrame:
+    """Build a long-format DataFrame across all timepoints.
+
+    Returns DataFrame with columns [Subject, Condition, Time, Value].
+    Rows with NaN values are dropped.
+    """
+    rows = []
+    for cond_name, df in condition_dfs.items():
+        for tp in timepoints:
+            if tp not in df.index:
+                continue
+            for subject in get_valid_subjects(df):
+                val = df.loc[tp, subject]
+                if not np.isnan(val):
+                    rows.append(
+                        {
+                            "Subject": subject,
+                            "Condition": cond_name,
+                            "Time": tp,
+                            "Value": float(val),
+                        }
+                    )
+    if not rows:
+        return pd.DataFrame(columns=["Subject", "Condition", "Time", "Value"])
+    return pd.DataFrame(rows)
+
+
 def build_long_format_at_timepoint(
     condition_dfs: dict[str, pd.DataFrame], timepoint: str
 ) -> pd.DataFrame:

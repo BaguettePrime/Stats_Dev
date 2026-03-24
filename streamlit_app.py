@@ -25,7 +25,13 @@ from utils.data_loader import (
     has_baseline,
     detect_event_gap,
 )
-from utils.statistics import run_tests_across_timepoints, run_omnibus_posthoc_across_timepoints
+from utils.data_loader import build_long_format_all_timepoints
+from utils.statistics import (
+    run_tests_across_timepoints,
+    run_omnibus_posthoc_across_timepoints,
+    run_twoway_rm_anova,
+    run_twoway_lmm,
+)
 from utils.plotting import create_figure, DEFAULT_COLORS
 from utils.export import fig_to_svg, fig_to_pdf, fig_to_png, stats_to_csv, create_batch_zip
 
@@ -203,21 +209,88 @@ analysis_mode = "Pairwise"
 omnibus_test = None
 posthoc_correction = "Bonferroni"
 multi_design = "independent"
+twoway_test = None
+twoway_followup_correction = "FDR (Benjamini-Hochberg)"
 
-if len(condition_order) >= 3:
+if len(condition_order) >= 2:
+    mode_options = ["Pairwise", "Two-way (Condition \u00d7 Time)"]
+    if len(condition_order) >= 3:
+        mode_options.append("Omnibus + Post-hoc")
     analysis_mode = st.sidebar.radio(
         "Analysis mode",
-        ["Pairwise", "Omnibus + Post-hoc"],
+        mode_options,
         index=0,
         help=(
-            "**Pairwise**: test each pair independently across timepoints. "
-            "**Omnibus + Post-hoc**: run an omnibus test first (ANOVA / LMM); "
-            "post-hoc pairwise comparisons are only performed at timepoints "
-            "where the omnibus is significant."
+            "**Pairwise**: test each pair independently at each timepoint. "
+            "**Two-way (Condition \u00d7 Time)**: single rm-ANOVA or LMM across "
+            "all timepoints; tests main effects and the interaction. If the "
+            "interaction is significant, follow-up per-timepoint tests identify "
+            "where conditions diverge. "
+            "**Omnibus + Post-hoc** (\u22653 conditions): per-timepoint omnibus "
+            "with post-hoc pairwise tests at significant timepoints."
         ),
     )
 
-if analysis_mode == "Omnibus + Post-hoc":
+if analysis_mode == "Two-way (Condition \u00d7 Time)":
+    # Detect design
+    if common_sheets:
+        ref_sheet = common_sheets[0]
+        multi_cond_dfs = {c: all_sheets[c][ref_sheet] for c in condition_order}
+        multi_design_info = detect_design_multi(multi_cond_dfs)
+    else:
+        multi_design_info = {
+            "design": "independent", "n_shared": 0,
+            "overlap_ratio": 0.0, "n_per_condition": {},
+        }
+
+    multi_design = multi_design_info["design"]
+    st.sidebar.markdown(
+        f"**Design**: {'repeated measures' if multi_design == 'repeated' else 'independent'} "
+        f"({multi_design_info['n_shared']} subjects shared across all conditions)"
+    )
+
+    override_multi = st.sidebar.checkbox(
+        f"Override to {'independent' if multi_design == 'repeated' else 'repeated measures'}",
+        value=False,
+        key="override_twoway_design",
+    )
+    if override_multi:
+        multi_design = "independent" if multi_design == "repeated" else "repeated"
+
+    if multi_design == "repeated":
+        twoway_options = ["Two-way rm-ANOVA", "Two-way LMM"]
+        twoway_help = (
+            "**Two-way rm-ANOVA**: parametric, requires complete cases "
+            "(all subjects in every condition at every timepoint). "
+            "**Two-way LMM**: parametric, handles missing subjects via "
+            "likelihood ratio tests on nested mixed models."
+        )
+    else:
+        twoway_options = ["Two-way LMM"]
+        twoway_help = (
+            "**Two-way LMM**: uses likelihood ratio tests on nested "
+            "mixed models. Suitable for independent or unbalanced designs."
+        )
+
+    twoway_test = st.sidebar.selectbox(
+        "Two-way test", twoway_options, index=0, help=twoway_help
+    )
+
+    twoway_followup_correction = st.sidebar.selectbox(
+        "Follow-up correction (per-timepoint tests)",
+        ["FDR (Benjamini-Hochberg)", "Bonferroni", "Holm-Bonferroni", "No correction"],
+        index=0,
+        help="Correction for per-timepoint follow-up tests when the interaction is significant.",
+    )
+
+    alpha = st.sidebar.number_input(
+        "Significance threshold (\u03b1)", 0.001, 0.1, 0.05, 0.005
+    )
+
+    correction_method = twoway_followup_correction
+    test_name = "No statistics"
+
+elif analysis_mode == "Omnibus + Post-hoc":
     # Detect multi-condition design
     if common_sheets:
         ref_sheet = common_sheets[0]
@@ -388,9 +461,73 @@ def generate_plot_and_stats(sheet_name):
     stats_results = {}
     stats_csv_data = {}
     omnibus_info = None
+    twoway_info = None
+
+    # ── Two-way (Condition × Time) path ─────────────────────────────────────
+    if (
+        analysis_mode == "Two-way (Condition \u00d7 Time)"
+        and twoway_test is not None
+        and len(conds_with_sheet) >= 2
+        and sheet_name in common_sheets
+    ):
+        cond_dfs = {c: all_sheets[c][sheet_name] for c in conds_with_sheet}
+        shared_tp = get_common_timepoints_multi(cond_dfs)
+
+        if shared_tp:
+            long_df = build_long_format_all_timepoints(cond_dfs, shared_tp)
+
+            if twoway_test == "Two-way rm-ANOVA":
+                table, n_subj = run_twoway_rm_anova(long_df, conds_with_sheet, shared_tp)
+            else:
+                table, n_subj = run_twoway_lmm(long_df, conds_with_sheet, shared_tp)
+
+            midpts = _timepoints_to_midpoints(shared_tp)
+            twoway_info = {
+                "table": table,
+                "n_subjects": n_subj,
+                "test_name": twoway_test,
+            }
+
+            # If interaction is significant, run per-timepoint follow-up
+            if table is not None:
+                interaction_key = "Condition:Time"
+                interaction_p = table.get(interaction_key, {}).get("p", 1.0)
+
+                if interaction_p < alpha:
+                    # Run per-timepoint pairwise tests as follow-up
+                    from itertools import combinations
+
+                    pairs = list(combinations(conds_with_sheet, 2))
+                    for ca, cb in pairs:
+                        df_a = all_sheets[ca][sheet_name]
+                        df_b = all_sheets[cb][sheet_name]
+
+                        if multi_design == "repeated":
+                            design_info = detect_design(df_a, df_b)
+                            subjects = [
+                                s for s in design_info["shared_subjects"]
+                                if s in get_valid_subjects(df_a) and s in get_valid_subjects(df_b)
+                            ]
+                            if len(subjects) < 2:
+                                continue
+                            data_a, data_b = prepare_paired_data(df_a, df_b, subjects, shared_tp)
+                            pair_test = "Paired t-test"
+                            design = "repeated"
+                        else:
+                            data_a, data_b = prepare_independent_data(df_a, df_b, shared_tp)
+                            pair_test = "Independent t-test"
+                            design = "independent"
+
+                        sr = run_tests_across_timepoints(
+                            data_a, data_b, pair_test, design,
+                            twoway_followup_correction, alpha
+                        )
+                        sr["midpoints"] = midpts
+                        comp_label = f"{condition_display_names[ca]} vs {condition_display_names[cb]}"
+                        stats_results[comp_label] = sr
 
     # ── Omnibus + Post-hoc path ─────────────────────────────────────────────
-    if (
+    elif (
         analysis_mode == "Omnibus + Post-hoc"
         and omnibus_test is not None
         and len(conds_with_sheet) >= 3
@@ -508,7 +645,7 @@ def generate_plot_and_stats(sheet_name):
     }
 
     fig = create_figure(condition_data, sheet_name, config, stats_results or None)
-    return fig, stats_results, stats_csv_data, omnibus_info
+    return fig, stats_results, stats_csv_data, omnibus_info, twoway_info
 
 
 # Generate plots for each selected sheet
@@ -519,15 +656,84 @@ for sheet_name in selected_sheets:
     st.subheader(f"Sheet: {sheet_name}")
 
     try:
-        fig, stats_results, stats_csv_data, omnibus_info = generate_plot_and_stats(sheet_name)
+        fig, stats_results, stats_csv_data, omnibus_info, twoway_info = generate_plot_and_stats(sheet_name)
         all_figures[sheet_name] = fig
         all_stats_csvs.update(stats_csv_data)
+
+        # Export bytes BEFORE closing the figure (avoids regenerating)
+        svg_bytes = fig_to_svg(fig)
+        pdf_bytes = fig_to_pdf(fig)
+        png_bytes = fig_to_png(fig, export_dpi)
 
         st.pyplot(fig)
         plt.close(fig)
 
+        # Display two-way ANOVA table
+        if twoway_info is not None and twoway_info["table"] is not None:
+            with st.expander(f"Two-way results \u2014 {sheet_name}", expanded=True):
+                tbl = twoway_info["table"]
+                st.write(
+                    f"**{twoway_info['test_name']}** "
+                    f"(N = {twoway_info['n_subjects']} subjects)"
+                )
+
+                # Build display table
+                is_lmm = "Two-way LMM" in twoway_info["test_name"]
+                stat_col = "LR stat" if is_lmm else "F"
+                rows_data = []
+                for effect, vals in tbl.items():
+                    stat_val = vals.get("LR", vals.get("F", np.nan))
+                    p_val = vals["p"]
+                    sig = "\u2713" if p_val < alpha else ""
+                    if is_lmm:
+                        rows_data.append({
+                            "Effect": effect, stat_col: f"{stat_val:.3f}",
+                            "df": int(vals["df"]), "p-value": f"{p_val:.4g}",
+                            f"Sig. (p < {alpha})": sig,
+                        })
+                    else:
+                        rows_data.append({
+                            "Effect": effect, stat_col: f"{stat_val:.3f}",
+                            "df (num)": int(vals["df_num"]),
+                            "df (den)": int(vals["df_den"]),
+                            "p-value": f"{p_val:.4g}",
+                            f"Sig. (p < {alpha})": sig,
+                        })
+                st.table(pd.DataFrame(rows_data))
+
+                # Interaction interpretation
+                inter_p = tbl.get("Condition:Time", {}).get("p", 1.0)
+                if inter_p < alpha:
+                    st.success(
+                        f"Condition \u00d7 Time interaction is significant "
+                        f"(p = {inter_p:.4g}). Per-timepoint follow-up tests "
+                        f"are shown below (correction: {twoway_followup_correction})."
+                    )
+                else:
+                    st.info(
+                        f"Condition \u00d7 Time interaction is not significant "
+                        f"(p = {inter_p:.4g}). No per-timepoint follow-up needed."
+                    )
+
+                # Show follow-up results if any
+                if stats_results:
+                    st.markdown("---")
+                    st.write("**Per-timepoint follow-up tests**")
+                    for comp_label, sr in stats_results.items():
+                        n_sig = int(np.sum(sr["significant"]))
+                        n_total = len(sr["significant"])
+                        st.write(
+                            f"*{comp_label}*: {n_sig}/{n_total} timepoints significant"
+                        )
+
+        elif twoway_info is not None and twoway_info["table"] is None:
+            st.warning(
+                f"Two-way analysis failed (only {twoway_info['n_subjects']} "
+                f"complete subjects; need \u22653)."
+            )
+
         # Display omnibus summary (Omnibus + Post-hoc mode)
-        if omnibus_info is not None:
+        elif omnibus_info is not None:
             with st.expander(f"Omnibus results \u2014 {sheet_name}", expanded=False):
                 n_sig = int(np.sum(omnibus_info["significant"]))
                 n_total = len(omnibus_info["significant"])
@@ -589,37 +795,27 @@ for sheet_name in selected_sheets:
                     })
                     st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
-        # Export buttons
+        # Export buttons (using pre-cached bytes — no figure regeneration)
         col_e1, col_e2, col_e3, col_e4 = st.columns(4)
-
-        # Re-create fig for export (since we closed it)
-        fig_export, _, _, _ = generate_plot_and_stats(sheet_name)
 
         with col_e1:
             st.download_button(
-                "Download SVG",
-                fig_to_svg(fig_export),
-                f"{sheet_name}.svg",
-                "image/svg+xml",
+                "Download SVG", svg_bytes,
+                f"{sheet_name}.svg", "image/svg+xml",
                 key=f"svg_{sheet_name}",
             )
         with col_e2:
             st.download_button(
-                "Download PDF",
-                fig_to_pdf(fig_export),
-                f"{sheet_name}.pdf",
-                "application/pdf",
+                "Download PDF", pdf_bytes,
+                f"{sheet_name}.pdf", "application/pdf",
                 key=f"pdf_{sheet_name}",
             )
         with col_e3:
             st.download_button(
-                "Download PNG",
-                fig_to_png(fig_export, export_dpi),
-                f"{sheet_name}.png",
-                "image/png",
+                "Download PNG", png_bytes,
+                f"{sheet_name}.png", "image/png",
                 key=f"png_{sheet_name}",
             )
-        plt.close(fig_export)
 
         # Stats CSV downloads
         for csv_name, csv_bytes in stats_csv_data.items():
@@ -648,7 +844,7 @@ if len(selected_sheets) > 1:
             batch_csvs = {}
             for sn in selected_sheets:
                 try:
-                    fig_b, _, csv_data, _ = generate_plot_and_stats(sn)
+                    fig_b, _, csv_data, _, _ = generate_plot_and_stats(sn)
                     batch_figs[sn] = fig_b
                     batch_csvs.update(csv_data)
                 except Exception:

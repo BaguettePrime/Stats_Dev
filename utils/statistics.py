@@ -199,7 +199,112 @@ def apply_correction(p_values: np.ndarray, method: str, alpha: float = 0.05) -> 
     return p_corrected
 
 
-# ── Omnibus tests (ANOVA / LMM / non-parametric) ────────────────────────────
+# ── Two-way analyses (Condition × Time) ──────────────────────────────────────
+
+def _complete_cases_twoway(long_df: pd.DataFrame, conditions: list[str], timepoints: list[str]) -> pd.DataFrame:
+    """Keep only subjects that have data at every Condition × Time cell."""
+    n_cells = len(conditions) * len(timepoints)
+    counts = long_df.groupby("Subject").size()
+    complete = counts[counts == n_cells].index
+    return long_df[long_df["Subject"].isin(complete)]
+
+
+def run_twoway_rm_anova(
+    long_df: pd.DataFrame, conditions: list[str], timepoints: list[str]
+) -> tuple[dict | None, int]:
+    """Run two-way repeated measures ANOVA (Condition × Time).
+
+    Requires complete cases (every subject has data at every Condition × Time
+    combination).
+
+    Returns:
+        (anova_table, n_complete_subjects)
+        anova_table maps effect name to {F, p, df_num, df_den}, or None on failure.
+    """
+    comp = _complete_cases_twoway(long_df, conditions, timepoints)
+    n_complete = comp["Subject"].nunique()
+    if n_complete < 3:
+        return None, n_complete
+
+    try:
+        aovrm = AnovaRM(comp, "Value", "Subject", within=["Condition", "Time"])
+        res = aovrm.fit()
+        table = {}
+        for effect in res.anova_table.index:
+            table[effect] = {
+                "F": res.anova_table.loc[effect, "F Value"],
+                "p": res.anova_table.loc[effect, "Pr > F"],
+                "df_num": res.anova_table.loc[effect, "Num DF"],
+                "df_den": res.anova_table.loc[effect, "Den DF"],
+            }
+        return table, n_complete
+    except Exception:
+        return None, n_complete
+
+
+def run_twoway_lmm(
+    long_df: pd.DataFrame, conditions: list[str], timepoints: list[str]
+) -> tuple[dict | None, int]:
+    """Run two-way analysis using Linear Mixed Model (handles missing data).
+
+    Fits nested models and uses likelihood ratio tests for each effect:
+      - Condition × Time interaction
+      - Main effect of Condition
+      - Main effect of Time
+
+    Returns:
+        (table, n_subjects)
+        table maps effect name to {LR, p, df}, or None on failure.
+    """
+    n_subjects = long_df["Subject"].nunique()
+    if n_subjects < 3:
+        return None, n_subjects
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            full = smf.mixedlm(
+                "Value ~ C(Condition) * C(Time)", long_df, groups=long_df["Subject"]
+            ).fit(reml=False)
+            no_inter = smf.mixedlm(
+                "Value ~ C(Condition) + C(Time)", long_df, groups=long_df["Subject"]
+            ).fit(reml=False)
+            no_cond = smf.mixedlm(
+                "Value ~ C(Time)", long_df, groups=long_df["Subject"]
+            ).fit(reml=False)
+            no_time = smf.mixedlm(
+                "Value ~ C(Condition)", long_df, groups=long_df["Subject"]
+            ).fit(reml=False)
+
+        table = {}
+
+        # Interaction: full vs additive
+        lr = -2 * (no_inter.llf - full.llf)
+        df = (len(conditions) - 1) * (len(timepoints) - 1)
+        table["Condition:Time"] = {
+            "LR": max(lr, 0.0), "p": stats.chi2.sf(max(lr, 0.0), df), "df": df
+        }
+
+        # Main effect of Condition: additive vs time-only
+        lr = -2 * (no_cond.llf - no_inter.llf)
+        df = len(conditions) - 1
+        table["Condition"] = {
+            "LR": max(lr, 0.0), "p": stats.chi2.sf(max(lr, 0.0), df), "df": df
+        }
+
+        # Main effect of Time: additive vs condition-only
+        lr = -2 * (no_time.llf - no_inter.llf)
+        df = len(timepoints) - 1
+        table["Time"] = {
+            "LR": max(lr, 0.0), "p": stats.chi2.sf(max(lr, 0.0), df), "df": df
+        }
+
+        return table, n_subjects
+    except Exception:
+        return None, n_subjects
+
+
+# ── Per-timepoint omnibus tests (one-way ANOVA / LMM) ───────────────────────
 
 def _complete_cases(long_df: pd.DataFrame, conditions: list[str]) -> pd.DataFrame:
     """Keep only subjects that have data in every condition."""
