@@ -1,10 +1,6 @@
 """Main Streamlit entry point for time series analysis app."""
 
-import sys
-import os
-
-# Ensure app modules are importable
-sys.path.insert(0, os.path.dirname(__file__))
+import re
 
 import streamlit as st
 import numpy as np
@@ -13,7 +9,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from data_loader import (
+from utils.data_loader import (
     extract_condition_name,
     load_excel_file,
     find_common_sheets,
@@ -27,9 +23,9 @@ from data_loader import (
     has_baseline,
     detect_event_gap,
 )
-from statistics import run_tests_across_timepoints
-from plotting import create_figure, DEFAULT_COLORS
-from export import fig_to_svg, fig_to_pdf, fig_to_png, stats_to_csv, create_batch_zip
+from utils.statistics import run_tests_across_timepoints
+from utils.plotting import create_figure, DEFAULT_COLORS
+from utils.export import fig_to_svg, fig_to_pdf, fig_to_png, stats_to_csv, create_batch_zip
 
 st.set_page_config(page_title="Time Series Analysis", layout="wide")
 st.title("Time Series Analysis & Statistical Comparison")
@@ -235,7 +231,7 @@ correction_method = st.sidebar.selectbox(
     index=0,
 )
 
-alpha = st.sidebar.number_input("Significance threshold (α)", 0.001, 0.1, 0.05, 0.005)
+alpha = st.sidebar.number_input("Significance threshold (\u03b1)", 0.001, 0.1, 0.05, 0.005)
 
 with st.sidebar.expander("Significance display", expanded=False):
     use_multi_thresh = st.checkbox("Multiple significance levels", value=False)
@@ -337,7 +333,6 @@ def generate_plot_and_stats(sheet_name):
             # Get midpoints for shared timepoints
             midpts = []
             for tp in shared_tp:
-                import re
                 match = re.match(r"\(?\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)?", tp)
                 if match:
                     midpts.append((float(match.group(1)) + float(match.group(2))) / 2)
@@ -397,13 +392,13 @@ for sheet_name in selected_sheets:
 
         # Display stats summary
         if stats_results:
-            with st.expander(f"Statistics details — {sheet_name}", expanded=False):
+            with st.expander(f"Statistics details \u2014 {sheet_name}", expanded=False):
                 for comp_label, sr in stats_results.items():
                     n_sig = np.sum(sr["significant"])
                     n_total = len(sr["significant"])
                     st.write(
                         f"**{comp_label}**: {n_sig}/{n_total} timepoints significant "
-                        f"(α = {alpha}, {correction_method})"
+                        f"(\u03b1 = {alpha}, {correction_method})"
                     )
                     # Show a small table
                     midpts = sr["midpoints"]
@@ -423,7 +418,7 @@ for sheet_name in selected_sheets:
 
         with col_e1:
             st.download_button(
-                f"Download SVG",
+                "Download SVG",
                 fig_to_svg(fig_export),
                 f"{sheet_name}.svg",
                 "image/svg+xml",
@@ -431,7 +426,7 @@ for sheet_name in selected_sheets:
             )
         with col_e2:
             st.download_button(
-                f"Download PDF",
+                "Download PDF",
                 fig_to_pdf(fig_export),
                 f"{sheet_name}.pdf",
                 "application/pdf",
@@ -439,7 +434,7 @@ for sheet_name in selected_sheets:
             )
         with col_e3:
             st.download_button(
-                f"Download PNG",
+                "Download PNG",
                 fig_to_png(fig_export, export_dpi),
                 f"{sheet_name}.png",
                 "image/png",
@@ -451,7 +446,7 @@ for sheet_name in selected_sheets:
         for csv_name, csv_bytes in stats_csv_data.items():
             with col_e4:
                 st.download_button(
-                    f"Stats CSV",
+                    "Stats CSV",
                     csv_bytes,
                     f"{csv_name}.csv",
                     "text/csv",

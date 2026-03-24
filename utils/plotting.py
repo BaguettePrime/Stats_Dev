@@ -6,7 +6,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
-from data_loader import get_midpoints, detect_event_gap
+from utils.data_loader import get_midpoints, detect_event_gap
 
 # Default colorblind-friendly palette (tab10 subset)
 DEFAULT_COLORS = [
@@ -148,7 +148,7 @@ def create_figure(
             for threshold, thresh_label in sig_thresholds:
                 ax_p.axhline(
                     y=threshold, color="red", linestyle="--",
-                    linewidth=0.8, alpha=0.6, label=f"α = {threshold}",
+                    linewidth=0.8, alpha=0.6, label=f"\u03b1 = {threshold}",
                 )
             ax_p.set_ylabel("p-value (corrected)", fontsize=config["font_size_axis"])
             ax_p.set_yscale("log")
