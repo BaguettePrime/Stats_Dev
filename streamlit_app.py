@@ -17,13 +17,15 @@ from utils.data_loader import (
     get_midpoints,
     get_valid_subjects,
     detect_design,
+    detect_design_multi,
     get_shared_timepoints,
+    get_common_timepoints_multi,
     prepare_paired_data,
     prepare_independent_data,
     has_baseline,
     detect_event_gap,
 )
-from utils.statistics import run_tests_across_timepoints
+from utils.statistics import run_tests_across_timepoints, run_omnibus_posthoc_across_timepoints
 from utils.plotting import create_figure, DEFAULT_COLORS
 from utils.export import fig_to_svg, fig_to_pdf, fig_to_png, stats_to_csv, create_batch_zip
 
@@ -196,42 +198,128 @@ for (ca, cb), info in designs.items():
     else:
         design_overrides[(ca, cb)] = detected
 
-# Test selection - adapt to designs
-test_options_repeated = [
-    "Permutation test",
-    "Paired t-test",
-    "Wilcoxon signed-rank",
-    "No statistics",
-]
-test_options_independent = [
-    "Permutation test",
-    "Independent t-test",
-    "Mann-Whitney U",
-    "No statistics",
-]
+# ── Analysis mode ────────────────────────────────────────────────────────────
+analysis_mode = "Pairwise"
+omnibus_test = None
+posthoc_correction = "Bonferroni"
+multi_design = "independent"
 
-# Use the first pair's design to set default test options
-any_repeated = any(d == "repeated" for d in design_overrides.values())
-any_independent = any(d == "independent" for d in design_overrides.values())
+if len(condition_order) >= 3:
+    analysis_mode = st.sidebar.radio(
+        "Analysis mode",
+        ["Pairwise", "Omnibus + Post-hoc"],
+        index=0,
+        help=(
+            "**Pairwise**: test each pair independently across timepoints. "
+            "**Omnibus + Post-hoc**: run an omnibus test first (ANOVA / LMM); "
+            "post-hoc pairwise comparisons are only performed at timepoints "
+            "where the omnibus is significant."
+        ),
+    )
 
-if any_repeated and any_independent:
-    all_test_options = list(dict.fromkeys(test_options_repeated + test_options_independent))
-elif any_repeated:
-    all_test_options = test_options_repeated
-elif any_independent:
-    all_test_options = test_options_independent
+if analysis_mode == "Omnibus + Post-hoc":
+    # Detect multi-condition design
+    if common_sheets:
+        ref_sheet = common_sheets[0]
+        multi_cond_dfs = {c: all_sheets[c][ref_sheet] for c in condition_order}
+        multi_design_info = detect_design_multi(multi_cond_dfs)
+    else:
+        multi_design_info = {
+            "design": "independent", "n_shared": 0,
+            "overlap_ratio": 0.0, "n_per_condition": {},
+        }
+
+    multi_design = multi_design_info["design"]
+    st.sidebar.markdown(
+        f"**Design**: {'repeated measures' if multi_design == 'repeated' else 'independent'} "
+        f"({multi_design_info['n_shared']} subjects shared across all conditions)"
+    )
+
+    override_multi = st.sidebar.checkbox(
+        f"Override to {'independent' if multi_design == 'repeated' else 'repeated measures'}",
+        value=False,
+        key="override_multi_design",
+    )
+    if override_multi:
+        multi_design = "independent" if multi_design == "repeated" else "repeated"
+
+    # Omnibus test options depend on design
+    if multi_design == "repeated":
+        omnibus_options = ["rm-ANOVA", "Linear Mixed Model", "Friedman"]
+        omnibus_help = (
+            "**rm-ANOVA**: parametric, requires complete cases (all subjects in every condition). "
+            "**Linear Mixed Model**: parametric, handles missing subjects naturally. "
+            "**Friedman**: non-parametric, requires complete cases."
+        )
+    else:
+        omnibus_options = ["One-way ANOVA", "Kruskal-Wallis"]
+        omnibus_help = (
+            "**One-way ANOVA**: parametric. "
+            "**Kruskal-Wallis**: non-parametric."
+        )
+
+    omnibus_test = st.sidebar.selectbox(
+        "Omnibus test", omnibus_options, index=0, help=omnibus_help
+    )
+
+    posthoc_correction = st.sidebar.selectbox(
+        "Post-hoc correction (across pairs)",
+        ["Bonferroni", "Holm-Bonferroni"],
+        index=0,
+        help="Correction applied across pairwise comparisons at each significant timepoint.",
+    )
+
+    correction_method = st.sidebar.selectbox(
+        "Timepoint correction (omnibus p-values)",
+        ["FDR (Benjamini-Hochberg)", "Bonferroni", "Holm-Bonferroni", "No correction"],
+        index=0,
+    )
+
+    alpha = st.sidebar.number_input(
+        "Significance threshold (\u03b1)", 0.001, 0.1, 0.05, 0.005
+    )
+
+    # Set test_name so pairwise code path is skipped
+    test_name = "No statistics"
+
 else:
-    all_test_options = ["No statistics"]
+    # ── Pairwise mode (original) ────────────────────────────────────────────
+    test_options_repeated = [
+        "Permutation test",
+        "Paired t-test",
+        "Wilcoxon signed-rank",
+        "No statistics",
+    ]
+    test_options_independent = [
+        "Permutation test",
+        "Independent t-test",
+        "Mann-Whitney U",
+        "No statistics",
+    ]
 
-test_name = st.sidebar.selectbox("Statistical test", all_test_options, index=0)
+    any_repeated = any(d == "repeated" for d in design_overrides.values())
+    any_independent = any(d == "independent" for d in design_overrides.values())
 
-correction_method = st.sidebar.selectbox(
-    "Multiple comparisons correction",
-    ["FDR (Benjamini-Hochberg)", "Bonferroni", "Holm-Bonferroni", "No correction"],
-    index=0,
-)
+    if any_repeated and any_independent:
+        all_test_options = list(dict.fromkeys(test_options_repeated + test_options_independent))
+    elif any_repeated:
+        all_test_options = test_options_repeated
+    elif any_independent:
+        all_test_options = test_options_independent
+    else:
+        all_test_options = ["No statistics"]
 
-alpha = st.sidebar.number_input("Significance threshold (\u03b1)", 0.001, 0.1, 0.05, 0.005)
+    test_name = st.sidebar.selectbox("Statistical test", all_test_options, index=0)
+
+    correction_method = st.sidebar.selectbox(
+        "Multiple comparisons correction",
+        ["FDR (Benjamini-Hochberg)", "Bonferroni", "Holm-Bonferroni", "No correction"],
+        index=0,
+    )
+
+    alpha = st.sidebar.number_input(
+        "Significance threshold (\u03b1)", 0.001, 0.1, 0.05, 0.005
+    )
 
 with st.sidebar.expander("Significance display", expanded=False):
     use_multi_thresh = st.checkbox("Multiple significance levels", value=False)
@@ -271,8 +359,20 @@ def _compute_mean_sem(df):
     return mean, sem
 
 
+def _timepoints_to_midpoints(timepoints):
+    """Convert timepoint labels to midpoint floats."""
+    midpts = []
+    for tp in timepoints:
+        match = re.match(r"\(?\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)?", tp)
+        if match:
+            midpts.append((float(match.group(1)) + float(match.group(2))) / 2)
+        else:
+            midpts.append(np.nan)
+    return np.array(midpts)
+
+
 def generate_plot_and_stats(sheet_name):
-    """Generate figure and stats for a single sheet. Returns (fig, stats_csvs)."""
+    """Generate figure and stats for a single sheet. Returns (fig, stats_results, stats_csvs, omnibus_info)."""
     # Which conditions have this sheet
     conds_with_sheet = [c for c in condition_order if sheet_name in all_sheets[c]]
 
@@ -287,8 +387,51 @@ def generate_plot_and_stats(sheet_name):
     # Stats
     stats_results = {}
     stats_csv_data = {}
+    omnibus_info = None
 
-    if test_name != "No statistics" and len(conds_with_sheet) >= 2:
+    # ── Omnibus + Post-hoc path ─────────────────────────────────────────────
+    if (
+        analysis_mode == "Omnibus + Post-hoc"
+        and omnibus_test is not None
+        and len(conds_with_sheet) >= 3
+        and sheet_name in common_sheets
+    ):
+        cond_dfs = {c: all_sheets[c][sheet_name] for c in conds_with_sheet}
+        shared_tp = get_common_timepoints_multi(cond_dfs)
+
+        if shared_tp:
+            result = run_omnibus_posthoc_across_timepoints(
+                condition_dfs=cond_dfs,
+                timepoints=shared_tp,
+                conditions=conds_with_sheet,
+                omnibus_test=omnibus_test,
+                timepoint_correction=correction_method,
+                posthoc_correction=posthoc_correction,
+                alpha=alpha,
+            )
+
+            midpts = _timepoints_to_midpoints(shared_tp)
+
+            # Store omnibus info for display
+            omnibus_info = result["omnibus"]
+            omnibus_info["midpoints"] = midpts
+            omnibus_info["timepoints"] = shared_tp
+
+            # Convert post-hoc results to plotting format
+            for (ca, cb), ph in result["posthoc"].items():
+                comp_label = (
+                    f"{condition_display_names[ca]} vs {condition_display_names[cb]}"
+                )
+                stats_results[comp_label] = {
+                    "test_stats": ph["test_stats"],
+                    "p_values": ph["p_values"],
+                    "p_corrected": ph["p_corrected"],
+                    "significant": ph["significant"],
+                    "midpoints": midpts,
+                }
+
+    # ── Pairwise path (original) ────────────────────────────────────────────
+    elif test_name != "No statistics" and len(conds_with_sheet) >= 2:
         for ca, cb in selected_pairs:
             if ca not in conds_with_sheet or cb not in conds_with_sheet:
                 continue
@@ -330,15 +473,8 @@ def generate_plot_and_stats(sheet_name):
                 data_a, data_b, pair_test, design, correction_method, alpha
             )
 
-            # Get midpoints for shared timepoints
-            midpts = []
-            for tp in shared_tp:
-                match = re.match(r"\(?\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)?", tp)
-                if match:
-                    midpts.append((float(match.group(1)) + float(match.group(2))) / 2)
-                else:
-                    midpts.append(np.nan)
-            sr["midpoints"] = np.array(midpts)
+            midpts = _timepoints_to_midpoints(shared_tp)
+            sr["midpoints"] = midpts
 
             comp_label = f"{condition_display_names[ca]} vs {condition_display_names[cb]}"
             stats_results[comp_label] = sr
@@ -347,7 +483,7 @@ def generate_plot_and_stats(sheet_name):
             mean_a, sem_a = _compute_mean_sem(df_a.loc[shared_tp])
             mean_b, sem_b = _compute_mean_sem(df_b.loc[shared_tp])
             csv_bytes = stats_to_csv(
-                shared_tp, np.array(midpts),
+                shared_tp, midpts,
                 mean_a, sem_a, mean_b, sem_b,
                 condition_display_names[ca], condition_display_names[cb],
                 sr,
@@ -372,7 +508,7 @@ def generate_plot_and_stats(sheet_name):
     }
 
     fig = create_figure(condition_data, sheet_name, config, stats_results or None)
-    return fig, stats_results, stats_csv_data
+    return fig, stats_results, stats_csv_data, omnibus_info
 
 
 # Generate plots for each selected sheet
@@ -383,15 +519,58 @@ for sheet_name in selected_sheets:
     st.subheader(f"Sheet: {sheet_name}")
 
     try:
-        fig, stats_results, stats_csv_data = generate_plot_and_stats(sheet_name)
+        fig, stats_results, stats_csv_data, omnibus_info = generate_plot_and_stats(sheet_name)
         all_figures[sheet_name] = fig
         all_stats_csvs.update(stats_csv_data)
 
         st.pyplot(fig)
         plt.close(fig)
 
-        # Display stats summary
-        if stats_results:
+        # Display omnibus summary (Omnibus + Post-hoc mode)
+        if omnibus_info is not None:
+            with st.expander(f"Omnibus results \u2014 {sheet_name}", expanded=False):
+                n_sig = int(np.sum(omnibus_info["significant"]))
+                n_total = len(omnibus_info["significant"])
+                st.write(
+                    f"**{omnibus_info['test_name']}**: {n_sig}/{n_total} "
+                    f"timepoints significant (\u03b1 = {alpha}, {correction_method})"
+                )
+
+                omnibus_df = pd.DataFrame({
+                    "Midpoint": omnibus_info["midpoints"],
+                    "Statistic": omnibus_info["test_stats"],
+                    "p (raw)": omnibus_info["p_values"],
+                    "p (corrected)": omnibus_info["p_corrected"],
+                    "Significant": omnibus_info["significant"],
+                    "N subjects": omnibus_info["n_subjects"],
+                })
+                st.dataframe(omnibus_df, use_container_width=True, hide_index=True)
+
+                if n_sig > 0 and stats_results:
+                    st.markdown("---")
+                    st.write(
+                        f"**Post-hoc pairwise tests** "
+                        f"(correction across pairs: {posthoc_correction})"
+                    )
+                    for comp_label, sr in stats_results.items():
+                        ph_sig = int(np.sum(sr["significant"]))
+                        st.write(f"*{comp_label}*: {ph_sig} timepoints significant")
+                        ph_df = pd.DataFrame({
+                            "Midpoint": sr["midpoints"],
+                            "p (raw)": sr["p_values"],
+                            "p (corrected)": sr["p_corrected"],
+                            "Significant": sr["significant"],
+                        })
+                        # Only show timepoints where omnibus was significant
+                        mask = omnibus_info["significant"]
+                        st.dataframe(
+                            ph_df[mask].reset_index(drop=True),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+
+        # Display pairwise stats summary (Pairwise mode)
+        elif stats_results:
             with st.expander(f"Statistics details \u2014 {sheet_name}", expanded=False):
                 for comp_label, sr in stats_results.items():
                     n_sig = np.sum(sr["significant"])
@@ -414,7 +593,7 @@ for sheet_name in selected_sheets:
         col_e1, col_e2, col_e3, col_e4 = st.columns(4)
 
         # Re-create fig for export (since we closed it)
-        fig_export, _, _ = generate_plot_and_stats(sheet_name)
+        fig_export, _, _, _ = generate_plot_and_stats(sheet_name)
 
         with col_e1:
             st.download_button(
@@ -469,7 +648,7 @@ if len(selected_sheets) > 1:
             batch_csvs = {}
             for sn in selected_sheets:
                 try:
-                    fig_b, _, csv_data = generate_plot_and_stats(sn)
+                    fig_b, _, csv_data, _ = generate_plot_and_stats(sn)
                     batch_figs[sn] = fig_b
                     batch_csvs.update(csv_data)
                 except Exception:
