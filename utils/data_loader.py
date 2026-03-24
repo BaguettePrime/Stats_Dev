@@ -169,3 +169,57 @@ def prepare_independent_data(
     data_a = df_a.loc[timepoints, subjects_a].values.astype(float)
     data_b = df_b.loc[timepoints, subjects_b].values.astype(float)
     return data_a, data_b
+
+
+def detect_design_multi(
+    condition_dfs: dict[str, pd.DataFrame], threshold: float = 0.8
+) -> dict:
+    """Detect experimental design across multiple (>2) conditions.
+
+    Returns dict with design type, shared subjects, and overlap ratio.
+    """
+    all_valid = {c: set(get_valid_subjects(df)) for c, df in condition_dfs.items()}
+    shared = set.intersection(*all_valid.values()) if all_valid else set()
+    min_n = min((len(s) for s in all_valid.values()), default=0)
+    ratio = len(shared) / min_n if min_n > 0 else 0.0
+
+    return {
+        "design": "repeated" if ratio >= threshold else "independent",
+        "shared_subjects": sorted(shared),
+        "overlap_ratio": ratio,
+        "n_shared": len(shared),
+        "n_per_condition": {c: len(s) for c, s in all_valid.items()},
+    }
+
+
+def get_common_timepoints_multi(
+    condition_dfs: dict[str, pd.DataFrame],
+) -> list[str]:
+    """Return timepoints present in all condition DataFrames, preserving order."""
+    sets = [set(df.index) for df in condition_dfs.values()]
+    common = set.intersection(*sets) if sets else set()
+    first_df = next(iter(condition_dfs.values()))
+    return [t for t in first_df.index if t in common]
+
+
+def build_long_format_at_timepoint(
+    condition_dfs: dict[str, pd.DataFrame], timepoint: str
+) -> pd.DataFrame:
+    """Build a long-format DataFrame for a single timepoint.
+
+    Returns DataFrame with columns [Subject, Condition, Value].
+    Rows with NaN values are dropped.
+    """
+    rows = []
+    for cond_name, df in condition_dfs.items():
+        if timepoint not in df.index:
+            continue
+        for subject in get_valid_subjects(df):
+            val = df.loc[timepoint, subject]
+            if not np.isnan(val):
+                rows.append(
+                    {"Subject": subject, "Condition": cond_name, "Value": float(val)}
+                )
+    if not rows:
+        return pd.DataFrame(columns=["Subject", "Condition", "Value"])
+    return pd.DataFrame(rows)
