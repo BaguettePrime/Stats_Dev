@@ -1,4 +1,4 @@
-"""Page 2 -- Statistical Analysis: pairwise, two-way ANOVA/LMM, omnibus + post-hoc."""
+"""Page 2 – Statistical Analysis: pairwise, two-way ANOVA/LMM, omnibus + post-hoc."""
 
 import re
 
@@ -40,7 +40,6 @@ from utils.statistics import (
 from utils.plotting import create_figure, DEFAULT_COLORS
 from utils.export import fig_to_svg, fig_to_pdf, fig_to_png, stats_to_csv, create_batch_zip
 
-st.set_page_config(page_title="Statistical Analysis", layout="wide")
 st.title("Statistical Analysis")
 
 # ── Upload & Setup ───────────────────────────────────────────────────────────
@@ -63,9 +62,11 @@ excluded = get_excluded_subjects()
 all_sheets = filter_excluded_from_sheets(all_sheets_raw, excluded)
 
 if excluded:
-    st.caption(f"Excluded subjects (set on Data Explorer page): {', '.join(sorted(excluded))}")
+    st.caption(
+        f"Excluded subjects (set on Data Explorer page): "
+        f"{', '.join(sorted(excluded))}"
+    )
 
-# Recompute common_sheets on filtered data
 common_sheets = find_common_sheets(all_sheets)
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
@@ -138,7 +139,7 @@ twoway_test = None
 twoway_followup_correction = "FDR (Benjamini-Hochberg)"
 
 if len(condition_order) >= 2:
-    mode_options = ["Pairwise", "Two-way (Condition \u00d7 Time)"]
+    mode_options = ["Pairwise", "Two-way (Condition × Time)"]
     if len(condition_order) >= 3:
         mode_options.append("Omnibus + Post-hoc")
     analysis_mode = st.sidebar.radio(
@@ -147,17 +148,17 @@ if len(condition_order) >= 2:
         index=0,
         help=(
             "**Pairwise**: test each pair independently at each timepoint. "
-            "**Two-way (Condition \u00d7 Time)**: single rm-ANOVA or LMM across "
+            "**Two-way (Condition × Time)**: single rm-ANOVA or LMM across "
             "all timepoints; tests main effects and the interaction. If the "
             "interaction is significant, follow-up per-timepoint tests identify "
             "where conditions diverge. "
-            "**Omnibus + Post-hoc** (\u22653 conditions): per-timepoint omnibus "
+            "**Omnibus + Post-hoc** (≥3 conditions): per-timepoint omnibus "
             "with post-hoc pairwise tests at significant timepoints."
         ),
     )
 
 # ── Two-way config ───────────────────────────────────────────────────────────
-if analysis_mode == "Two-way (Condition \u00d7 Time)":
+if analysis_mode == "Two-way (Condition × Time)":
     if common_sheets:
         ref = common_sheets[0]
         multi_dfs = {c: all_sheets[c][ref] for c in condition_order}
@@ -179,21 +180,16 @@ if analysis_mode == "Two-way (Condition \u00d7 Time)":
 
     if multi_design == "repeated":
         twoway_options = ["Two-way rm-ANOVA", "Two-way LMM"]
-        twoway_help = (
-            "**Two-way rm-ANOVA**: parametric, requires complete cases. "
-            "**Two-way LMM**: parametric, handles missing subjects."
-        )
     else:
         twoway_options = ["Two-way LMM"]
-        twoway_help = "**Two-way LMM**: likelihood ratio tests on nested mixed models."
 
-    twoway_test = st.sidebar.selectbox("Two-way test", twoway_options, index=0, help=twoway_help)
+    twoway_test = st.sidebar.selectbox("Two-way test", twoway_options, index=0)
     twoway_followup_correction = st.sidebar.selectbox(
         "Follow-up correction (per-timepoint)",
         ["FDR (Benjamini-Hochberg)", "Bonferroni", "Holm-Bonferroni", "No correction"],
         index=0,
     )
-    alpha = st.sidebar.number_input("Significance threshold (\u03b1)", 0.001, 0.1, 0.05, 0.005)
+    alpha = st.sidebar.number_input("Significance threshold (α)", 0.001, 0.1, 0.05, 0.005)
     correction_method = twoway_followup_correction
     test_name = "No statistics"
 
@@ -232,7 +228,7 @@ elif analysis_mode == "Omnibus + Post-hoc":
         ["FDR (Benjamini-Hochberg)", "Bonferroni", "Holm-Bonferroni", "No correction"],
         index=0,
     )
-    alpha = st.sidebar.number_input("Significance threshold (\u03b1)", 0.001, 0.1, 0.05, 0.005)
+    alpha = st.sidebar.number_input("Significance threshold (α)", 0.001, 0.1, 0.05, 0.005)
     test_name = "No statistics"
 
 # ── Pairwise config ──────────────────────────────────────────────────────────
@@ -257,7 +253,7 @@ else:
         ["FDR (Benjamini-Hochberg)", "Bonferroni", "Holm-Bonferroni", "No correction"],
         index=0,
     )
-    alpha = st.sidebar.number_input("Significance threshold (\u03b1)", 0.001, 0.1, 0.05, 0.005)
+    alpha = st.sidebar.number_input("Significance threshold (α)", 0.001, 0.1, 0.05, 0.005)
 
 # ── Shared display options ───────────────────────────────────────────────────
 with st.sidebar.expander("Significance display", expanded=False):
@@ -318,9 +314,9 @@ def generate_plot_and_stats(sheet_name):
     omnibus_info = None
     twoway_info = None
 
-    # ── Two-way (Condition x Time) ──────────────────────────────────────
+    # ── Two-way (Condition × Time) ──────────────────────────────────────
     if (
-        analysis_mode == "Two-way (Condition \u00d7 Time)"
+        analysis_mode == "Two-way (Condition × Time)"
         and twoway_test is not None
         and len(conds_with_sheet) >= 2
         and sheet_name in common_sheets
@@ -344,12 +340,14 @@ def generate_plot_and_stats(sheet_name):
                 if inter_p < alpha:
                     from itertools import combinations
                     for ca, cb in combinations(conds_with_sheet, 2):
-                        df_a, df_b = all_sheets[ca][sheet_name], all_sheets[cb][sheet_name]
+                        df_a = all_sheets[ca][sheet_name]
+                        df_b = all_sheets[cb][sheet_name]
                         if multi_design == "repeated":
                             di = detect_design(df_a, df_b)
                             subjs = [
                                 s for s in di["shared_subjects"]
-                                if s in get_valid_subjects(df_a) and s in get_valid_subjects(df_b)
+                                if s in get_valid_subjects(df_a)
+                                and s in get_valid_subjects(df_b)
                             ]
                             if len(subjs) < 2:
                                 continue
@@ -363,7 +361,9 @@ def generate_plot_and_stats(sheet_name):
                             da, db, pt, des, twoway_followup_correction, alpha,
                         )
                         sr["midpoints"] = midpts
-                        stats_results[f"{display_names[ca]} vs {display_names[cb]}"] = sr
+                        stats_results[
+                            f"{display_names[ca]} vs {display_names[cb]}"
+                        ] = sr
 
     # ── Omnibus + Post-hoc ──────────────────────────────────────────────
     elif (
@@ -426,7 +426,9 @@ def generate_plot_and_stats(sheet_name):
             else:
                 da, db = prepare_independent_data(df_a, df_b, shared_tp)
 
-            sr = run_tests_across_timepoints(da, db, pair_test, design, correction_method, alpha)
+            sr = run_tests_across_timepoints(
+                da, db, pair_test, design, correction_method, alpha,
+            )
             midpts = _tp_to_mid(shared_tp)
             sr["midpoints"] = midpts
             comp_label = f"{display_names[ca]} vs {display_names[cb]}"
@@ -489,7 +491,7 @@ for sheet_name in selected_sheets:
 
         # ── Two-way results ─────────────────────────────────────────────
         if twoway_info is not None and twoway_info["table"] is not None:
-            with st.expander(f"Two-way results \u2014 {sheet_name}", expanded=True):
+            with st.expander(f"Two-way results — {sheet_name}", expanded=True):
                 tbl = twoway_info["table"]
                 st.write(
                     f"**{twoway_info['test_name']}** "
@@ -502,8 +504,12 @@ for sheet_name in selected_sheets:
                 for effect, vals in tbl.items():
                     stat_val = vals.get("LR", vals.get("F", np.nan))
                     p_val = vals["p"]
-                    sig = "\u2713" if p_val < alpha else ""
-                    row = {"Effect": effect, stat_col: f"{stat_val:.3f}", "p-value": f"{p_val:.4g}"}
+                    sig = "✓" if p_val < alpha else ""
+                    row = {
+                        "Effect": effect,
+                        stat_col: f"{stat_val:.3f}",
+                        "p-value": f"{p_val:.4g}",
+                    }
                     if is_lmm:
                         row["df"] = int(vals["df"])
                     else:
@@ -516,11 +522,10 @@ for sheet_name in selected_sheets:
                 inter_p = tbl.get("Condition:Time", {}).get("p", 1.0)
                 if inter_p < alpha:
                     st.success(
-                        f"Condition \u00d7 Time interaction is significant "
+                        f"Condition × Time interaction is significant "
                         f"(p = {inter_p:.4g}). Per-timepoint follow-up tests "
                         f"shown below (correction: {twoway_followup_correction})."
                     )
-                    # ── Detailed post-hoc table per pair ────────────────
                     if stats_results:
                         for comp_label, sr in stats_results.items():
                             n_sig = int(np.sum(sr["significant"]))
@@ -541,24 +546,24 @@ for sheet_name in selected_sheets:
                             )
                 else:
                     st.info(
-                        f"Condition \u00d7 Time interaction is not significant "
+                        f"Condition × Time interaction is not significant "
                         f"(p = {inter_p:.4g}). No per-timepoint follow-up needed."
                     )
 
         elif twoway_info is not None and twoway_info["table"] is None:
             st.warning(
                 f"Two-way analysis failed (only {twoway_info['n_subjects']} "
-                f"complete subjects; need \u22653)."
+                f"complete subjects; need ≥3)."
             )
 
         # ── Omnibus + Post-hoc results ──────────────────────────────────
         elif omnibus_info is not None:
-            with st.expander(f"Omnibus results \u2014 {sheet_name}", expanded=False):
+            with st.expander(f"Omnibus results — {sheet_name}", expanded=False):
                 n_sig = int(np.sum(omnibus_info["significant"]))
                 n_total = len(omnibus_info["significant"])
                 st.write(
                     f"**{omnibus_info['test_name']}**: {n_sig}/{n_total} "
-                    f"timepoints significant (\u03b1 = {alpha}, {correction_method})"
+                    f"timepoints significant (α = {alpha}, {correction_method})"
                 )
                 omnibus_df = pd.DataFrame({
                     "Midpoint": omnibus_info["midpoints"],
@@ -593,13 +598,13 @@ for sheet_name in selected_sheets:
 
         # ── Pairwise results ────────────────────────────────────────────
         elif stats_results:
-            with st.expander(f"Statistics details \u2014 {sheet_name}", expanded=False):
+            with st.expander(f"Statistics details — {sheet_name}", expanded=False):
                 for comp_label, sr in stats_results.items():
                     n_sig = int(np.sum(sr["significant"]))
                     n_total = len(sr["significant"])
                     st.write(
                         f"**{comp_label}**: {n_sig}/{n_total} timepoints significant "
-                        f"(\u03b1 = {alpha}, {correction_method})"
+                        f"(α = {alpha}, {correction_method})"
                     )
                     summary_df = pd.DataFrame({
                         "Midpoint": sr["midpoints"],
@@ -629,10 +634,10 @@ for sheet_name in selected_sheets:
                 f"{sheet_name}.png", "image/png",
                 key=f"png_{sheet_name}",
             )
-        for csv_name, csv_bytes in stats_csv_data.items():
+        for csv_name, csv_bytes_data in stats_csv_data.items():
             with col_e4:
                 st.download_button(
-                    "Stats CSV", csv_bytes,
+                    "Stats CSV", csv_bytes_data,
                     f"{csv_name}.csv", "text/csv",
                     key=f"csv_{csv_name}_{sheet_name}",
                 )

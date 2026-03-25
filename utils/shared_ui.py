@@ -12,10 +12,9 @@ from utils.plotting import DEFAULT_COLORS
 
 
 def render_upload() -> bool:
-    """Render file upload widget and load data into session state.
+    """Render file upload widget and persist data in session state.
 
-    Returns True if data is available (either freshly uploaded or from a
-    previous upload stored in session state).
+    Returns True if data is available.
     """
     uploaded_files = st.file_uploader(
         "Upload Excel files (one per condition)",
@@ -26,18 +25,16 @@ def render_upload() -> bool:
     if uploaded_files:
         file_key = tuple(sorted(f.name for f in uploaded_files))
         if st.session_state.get("_file_key") != file_key:
-            all_sheets = {}
+            all_sheets: dict = {}
             for f in uploaded_files:
                 cond = extract_condition_name(f.name)
                 all_sheets[cond] = load_excel_file(f)
             st.session_state["all_sheets"] = all_sheets
             st.session_state["sorted_conditions"] = sorted(all_sheets.keys())
             st.session_state["_file_key"] = file_key
-            # Reset excluded subjects on new data
             st.session_state["excluded_subjects"] = set()
         return True
 
-    # No files currently in the uploader, but data may already be loaded
     if "all_sheets" in st.session_state:
         return True
 
@@ -49,14 +46,11 @@ def render_upload() -> bool:
 
 
 def render_condition_setup():
-    """Render condition label inputs.
-
-    Returns (condition_display_names, condition_order).
-    """
+    """Render condition label inputs. Returns (display_names, condition_order)."""
     sorted_conditions = st.session_state["sorted_conditions"]
     cols = st.columns(len(sorted_conditions))
-    display_names = {}
-    order = []
+    display_names: dict[str, str] = {}
+    order: list[str] = []
 
     for i, cond in enumerate(sorted_conditions):
         with cols[i]:
@@ -93,7 +87,7 @@ def filter_excluded_from_sheets(all_sheets, excluded):
     """Return a copy of all_sheets with excluded subject columns removed."""
     if not excluded:
         return all_sheets
-    filtered = {}
+    filtered: dict = {}
     for cond, sheets in all_sheets.items():
         filtered[cond] = {}
         for name, df in sheets.items():
@@ -103,9 +97,9 @@ def filter_excluded_from_sheets(all_sheets, excluded):
 
 
 def render_sidebar_colors(condition_order, display_names):
-    """Render color pickers in the sidebar. Returns colors dict."""
+    """Render colour pickers in the sidebar. Returns {cond: hex_color}."""
     st.sidebar.subheader("Colors")
-    colors = {}
+    colors: dict[str, str] = {}
     for i, cond in enumerate(condition_order):
         default = DEFAULT_COLORS[i % len(DEFAULT_COLORS)]
         colors[cond] = st.sidebar.color_picker(
@@ -117,7 +111,7 @@ def render_sidebar_colors(condition_order, display_names):
 
 
 def render_sidebar_plot_config():
-    """Render plot configuration widgets in sidebar. Returns config dict."""
+    """Render plot-configuration widgets in the sidebar. Returns config dict."""
     with st.sidebar.expander("Labels & Fonts", expanded=False):
         custom_title = st.text_input(
             "Title (leave blank for sheet name)", value="", key="custom_title"
