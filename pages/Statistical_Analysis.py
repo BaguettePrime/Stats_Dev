@@ -147,13 +147,19 @@ if len(condition_order) >= 2:
         mode_options,
         index=0,
         help=(
-            "**Pairwise**: test each pair independently at each timepoint. "
-            "**Two-way (Condition × Time)**: single rm-ANOVA or LMM across "
-            "all timepoints; tests main effects and the interaction. If the "
-            "interaction is significant, follow-up per-timepoint tests identify "
-            "where conditions diverge. "
-            "**Omnibus + Post-hoc** (≥3 conditions): per-timepoint omnibus "
-            "with post-hoc pairwise tests at significant timepoints."
+            "**Pairwise**: test each selected pair at each timepoint independently. "
+            "Choose this when you have specific pairs to compare.\n\n"
+            "**Two-way (Condition × Time)**: a single global test (rm-ANOVA or LMM) "
+            "that tests whether there is a main effect of Condition, a main effect "
+            "of Time, and crucially a Condition × Time *interaction* (i.e. do "
+            "conditions diverge over time?). If the interaction is significant, "
+            "follow-up pairwise tests at each timepoint show *where* the selected "
+            "pairs differ.\n\n"
+            "**Omnibus + Post-hoc** (≥ 3 conditions): at each timepoint, first runs "
+            "a single omnibus test across *all* conditions (ANOVA / Kruskal-Wallis / "
+            "Friedman). Only at timepoints where the omnibus is significant, "
+            "post-hoc pairwise tests identify *which* pairs differ. This controls "
+            "the family-wise error rate better than running all pairwise tests."
         ),
     )
 
@@ -338,8 +344,12 @@ def generate_plot_and_stats(sheet_name):
             if table is not None:
                 inter_p = table.get("Condition:Time", {}).get("p", 1.0)
                 if inter_p < alpha:
-                    from itertools import combinations
-                    for ca, cb in combinations(conds_with_sheet, 2):
+                    # Only run follow-ups for user-selected pairs
+                    followup_pairs = [
+                        (ca, cb) for ca, cb in selected_pairs
+                        if ca in conds_with_sheet and cb in conds_with_sheet
+                    ]
+                    for ca, cb in followup_pairs:
                         df_a = all_sheets[ca][sheet_name]
                         df_b = all_sheets[cb][sheet_name]
                         if multi_design == "repeated":
@@ -384,7 +394,11 @@ def generate_plot_and_stats(sheet_name):
             omnibus_info["midpoints"] = midpts
             omnibus_info["timepoints"] = shared_tp
 
+            # Only show post-hoc results for user-selected pairs
+            selected_set = set(selected_pairs)
             for (ca, cb), ph in result["posthoc"].items():
+                if (ca, cb) not in selected_set and (cb, ca) not in selected_set:
+                    continue
                 stats_results[f"{display_names[ca]} vs {display_names[cb]}"] = {
                     "test_stats": ph["test_stats"],
                     "p_values": ph["p_values"],
