@@ -20,7 +20,19 @@ DEFAULT_COLORS = [
     "#7f7f7f",  # gray
 ]
 
-SIGNIFICANCE_COLORS = ["#888888", "#555555", "#222222"]
+# Distinct palette for pairwise comparison significance bars
+COMPARISON_BAR_COLORS = [
+    "#e41a1c",  # red
+    "#377eb8",  # blue
+    "#4daf4a",  # green
+    "#984ea3",  # purple
+    "#ff7f00",  # orange
+    "#a65628",  # brown
+    "#f781bf",  # pink
+    "#999999",  # grey
+]
+# Opacity levels for multiple significance thresholds within a comparison
+THRESHOLD_ALPHAS = [0.9, 0.55, 0.35]
 
 
 def create_figure(
@@ -93,58 +105,63 @@ def create_figure(
         if ax_p is not None:
             ax_p.axvline(x=0, color="black", linestyle="--", linewidth=0.8, alpha=0.6)
 
-    # Significance bars
+    # Significance bars — each comparison gets a distinct colour
     if stats_results:
         sig_thresholds = config.get("sig_thresholds", [(0.05, "p < 0.05")])
         y_min, y_max = ax.get_ylim()
-        bar_height = (y_max - y_min) * 0.02
-        legend_extras = []
+        bar_height = (y_max - y_min) * 0.025
+        gap = bar_height * 0.4  # gap between comparison rows
+
+        n_thresh = len(sig_thresholds)
+        row_idx = 0  # track total rows drawn
 
         for comp_idx, (comp_label, sr) in enumerate(stats_results.items()):
             midpts = sr["midpoints"]
             p_corr = sr["p_corrected"]
+            comp_color = COMPARISON_BAR_COLORS[comp_idx % len(COMPARISON_BAR_COLORS)]
 
             for thresh_idx, (threshold, thresh_label) in enumerate(sig_thresholds):
                 sig_mask = p_corr < threshold
-                if not np.any(sig_mask):
-                    continue
-
-                bar_y = y_max + bar_height * (comp_idx * len(sig_thresholds) + thresh_idx + 0.5)
-                color = SIGNIFICANCE_COLORS[min(thresh_idx, len(SIGNIFICANCE_COLORS) - 1)]
-
-                # Draw horizontal bars at significant timepoints
                 sig_indices = np.where(sig_mask)[0]
                 if len(sig_indices) == 0:
                     continue
 
-                # Group consecutive significant timepoints into spans
+                bar_y = y_max + gap + (bar_height + gap) * row_idx + bar_height / 2
+                alpha = THRESHOLD_ALPHAS[min(thresh_idx, len(THRESHOLD_ALPHAS) - 1)]
+
                 spans = _group_consecutive(sig_indices, midpts)
                 for x_start, x_end in spans:
                     ax.fill_between(
                         [x_start, x_end],
                         [bar_y - bar_height / 2] * 2,
                         [bar_y + bar_height / 2] * 2,
-                        color=color, alpha=0.7,
+                        color=comp_color, alpha=alpha,
                     )
 
-                display_label = f"{comp_label} {thresh_label}" if comp_label else thresh_label
-                legend_extras.append(
-                    Line2D([0], [0], color=color, linewidth=4, alpha=0.7, label=display_label)
+                # Short label annotation on the right
+                x_annot = midpts[~np.isnan(midpts)].max() if len(midpts) else 0
+                short = comp_label if len(comp_label) <= 20 else comp_label[:18] + "…"
+                ax.text(
+                    x_annot, bar_y, f"  {short} {thresh_label}",
+                    fontsize=max(config.get("font_size_tick", 10) - 2, 6),
+                    va="center", ha="left", color=comp_color, alpha=min(alpha + 0.1, 1),
+                    clip_on=False,
                 )
+                row_idx += 1
 
-        # Extend y-axis to show sig bars
-        if legend_extras:
-            new_ymax = y_max + bar_height * (
-                len(stats_results) * len(sig_thresholds) + 1
-            )
+        # Extend y-axis to accommodate bars
+        if row_idx > 0:
+            new_ymax = y_max + gap + (bar_height + gap) * row_idx + gap
             ax.set_ylim(y_min, new_ymax)
 
-        # P-value curve subplot
+        # P-value curve subplot — colour-matched to comparison bars
         if ax_p is not None:
-            for comp_label, sr in stats_results.items():
+            for comp_idx, (comp_label, sr) in enumerate(stats_results.items()):
                 midpts = sr["midpoints"]
                 p_corr = sr["p_corrected"]
-                ax_p.plot(midpts, p_corr, linewidth=1, label=comp_label or "p-value")
+                c = COMPARISON_BAR_COLORS[comp_idx % len(COMPARISON_BAR_COLORS)]
+                ax_p.plot(midpts, p_corr, linewidth=1, color=c,
+                          label=comp_label or "p-value")
             for threshold, thresh_label in sig_thresholds:
                 ax_p.axhline(
                     y=threshold, color="red", linestyle="--",
@@ -162,17 +179,18 @@ def create_figure(
     ax.set_ylabel(config.get("y_label", sheet_name), fontsize=config["font_size_axis"])
     ax.tick_params(labelsize=config["font_size_tick"])
 
-    # Legend
+    # Legend — add colour-coded entries per comparison
     handles, labels = ax.get_legend_handles_labels()
     if stats_results:
         sig_thresholds = config.get("sig_thresholds", [(0.05, "p < 0.05")])
-        for comp_label, sr in stats_results.items():
+        for comp_idx, (comp_label, sr) in enumerate(stats_results.items()):
+            comp_color = COMPARISON_BAR_COLORS[comp_idx % len(COMPARISON_BAR_COLORS)]
             for thresh_idx, (threshold, thresh_label) in enumerate(sig_thresholds):
                 if np.any(sr["p_corrected"] < threshold):
-                    color = SIGNIFICANCE_COLORS[min(thresh_idx, len(SIGNIFICANCE_COLORS) - 1)]
+                    alpha = THRESHOLD_ALPHAS[min(thresh_idx, len(THRESHOLD_ALPHAS) - 1)]
                     display_label = f"{comp_label} {thresh_label}" if comp_label else thresh_label
                     handles.append(
-                        Line2D([0], [0], color=color, linewidth=4, alpha=0.7)
+                        Line2D([0], [0], color=comp_color, linewidth=4, alpha=alpha)
                     )
                     labels.append(display_label)
 
